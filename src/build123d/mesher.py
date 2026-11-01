@@ -86,8 +86,10 @@ import math
 import os
 import sys
 import warnings
+from array import array
 from collections.abc import Iterable
 from io import BytesIO
+from itertools import chain
 from os import PathLike, fsdecode
 from typing import Literal
 from uuid import UUID
@@ -320,41 +322,46 @@ class Mesher:
         # considered as different vertices
         digits = -int(round(math.log(TOLERANCE, 10), 1))
 
-        # Create vertex to index mapping directly
+        # Round each distinct coordinate value only once; meshes repeat values
+        # heavily. Whole numbers (including ±0.0, whose sign must be kept) are
+        # unchanged by rounding and so are left out.
+        rounded = {
+            value: round(value, digits)
+            for value in dict.fromkeys(chain.from_iterable(ocp_mesh_vertices))
+            if value % 1
+        }
+        get_rounded = rounded.get
+
+        # Map each rounded vertex to the index of its first occurrence
         vertex_to_idx = {}
-        next_idx = 0
-        vert_table = {}
+        add_vertex = vertex_to_idx.setdefault
+        vert_table = {
+            i: add_vertex(
+                (get_rounded(x, x), get_rounded(y, y), get_rounded(z, z)),
+                len(vertex_to_idx),
+            )
+            for i, (x, y, z) in enumerate(ocp_mesh_vertices)
+        }
 
-        # First pass - create mapping
-        for i, (x, y, z) in enumerate(ocp_mesh_vertices):
-            key = (round(x, digits), round(y, digits), round(z, digits))
-            if key not in vertex_to_idx:
-                vertex_to_idx[key] = next_idx
-                next_idx += 1
-            vert_table[i] = vertex_to_idx[key]
-
-        # Create vertices array in one shot
-        vertices_3mf = [
-            Lib3MF.Position((ctypes.c_float * 3)(*v)) for v in vertex_to_idx
-        ]
-
-        # Pre-allocate triangles array and process in bulk
-        c_uint3 = ctypes.c_uint * 3
-        triangles_3mf = []
-
-        # Process triangles in bulk
+        # Remap the triangles, dropping the degenerate ones
+        tri_indices = array("I")
+        add_indices = tri_indices.extend
         for tri in triangles:
-            # Map indices directly without list comprehension
-            a, b, c = tri[0], tri[1], tri[2]
-            mapped_a = vert_table[a]
-            mapped_b = vert_table[b]
-            mapped_c = vert_table[c]
-
-            # Quick degenerate check without set creation
+            mapped_a = vert_table[tri[0]]
+            mapped_b = vert_table[tri[1]]
+            mapped_c = vert_table[tri[2]]
             if mapped_a != mapped_b and mapped_b != mapped_c and mapped_c != mapped_a:
-                triangles_3mf.append(
-                    Lib3MF.Triangle(c_uint3(mapped_a, mapped_b, mapped_c))
-                )
+                add_indices((mapped_a, mapped_b, mapped_c))
+
+        # Build the ctypes structures from one packed buffer each instead of
+        # allocating a temporary array per element
+        coordinates = array("f", chain.from_iterable(vertex_to_idx))
+        vertices_3mf = (Lib3MF.Position * len(vertex_to_idx)).from_buffer_copy(
+            coordinates
+        )[:]
+        triangles_3mf = (Lib3MF.Triangle * (len(tri_indices) // 3)).from_buffer_copy(
+            tri_indices
+        )[:]
 
         return (vertices_3mf, triangles_3mf)
 
