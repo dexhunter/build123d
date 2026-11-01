@@ -214,11 +214,43 @@ class Vector:
 
     def __init__(self, *args, **kwargs):
         self.vector_index = 0
+
+        # Fast paths for the most common positional-only forms
+        if not kwargs:
+            if len(args) == 1:
+                arg = args[0]
+                arg_type = type(arg)
+                # Coord() returns plain floats, avoiding a temporary gp_XYZ.
+                # Exact types only: subclasses may add iteration or a wrapped attribute
+                if arg_type is gp_Pnt or arg_type is gp_Vec or arg_type is gp_Dir:
+                    self._wrapped = gp_Vec(*arg.Coord())
+                    return
+                if isinstance(arg, Vector):
+                    self._wrapped = gp_Vec(*arg.wrapped.Coord())
+                    return
+            elif len(args) == 2:
+                x, y = args
+                if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                    self._wrapped = gp_Vec(x, y, 0.0)
+                    return
+            elif len(args) == 3:
+                x, y, z = args
+                if (
+                    isinstance(x, (int, float))
+                    and isinstance(y, (int, float))
+                    and isinstance(z, (int, float))
+                ):
+                    self._wrapped = gp_Vec(x, y, z)
+                    return
+
         x, y, z, ocp_vec = 0, 0, 0, None
 
-        unknown_args = ", ".join(set(kwargs.keys()).difference(["v", "X", "Y", "Z"]))
-        if unknown_args:
-            raise ValueError(f"Unexpected argument(s) {unknown_args}")
+        if kwargs:
+            unknown_args = ", ".join(
+                set(kwargs.keys()).difference(["v", "X", "Y", "Z"])
+            )
+            if unknown_args:
+                raise ValueError(f"Unexpected argument(s) {unknown_args}")
 
         if args and all(isinstance(args[i], (int, float)) for i in range(len(args))):
             values = list(args)
